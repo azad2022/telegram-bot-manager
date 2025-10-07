@@ -1,0 +1,28 @@
+version: '3.8'
+services:
+  postgres:
+    image: postgres:15
+    container_name: telegram-bot-postgres
+    environment:
+      POSTGRES_DB: telegram_bot
+      POSTGRES_USER: bot_user
+      POSTGRES_PASSWORD: bot_password_123
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: telegram-bot-redis
+    ports:
+      - "6380:6379"
+    command: redis-server --requirepass redis_password_123
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
