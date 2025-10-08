@@ -1,3 +1,4 @@
+cat > main.go << 'EOF'
 package main
 
 import (
@@ -9,6 +10,7 @@ import (
 	"telegram-bot-manager/database"
 	"telegram-bot-manager/handlers"
 	"telegram-bot-manager/models"
+	"telegram-bot-manager/services"
 
 	"gopkg.in/telebot.v3"
 )
@@ -17,16 +19,18 @@ func main() {
 	// بارگذاری تنظیمات
 	config := LoadConfig()
 
+	log.Println("🚀 شروع راه‌اندازی ربات...")
+
 	// اتصال به دیتابیس PostgreSQL
 	err := database.InitPostgreSQL(config.DatabaseURL)
 	if err != nil {
-		log.Fatalf("خطا در اتصال به PostgreSQL: %v", err)
+		log.Fatalf("❌ خطا در اتصال به PostgreSQL: %v", err)
 	}
 
 	// اتصال به Redis
 	err = database.InitRedis(config.RedisURL, config.RedisPassword)
 	if err != nil {
-		log.Fatalf("خطا در اتصال به Redis: %v", err)
+		log.Fatalf("❌ خطا در اتصال به Redis: %v", err)
 	}
 
 	// تنظیمات ربات تلگرام
@@ -47,8 +51,15 @@ func main() {
 	// راه‌اندازی هندلرها
 	setupHandlers(bot)
 
+	// راه‌اندازی scheduler
+	scheduler := services.NewScheduler(bot, database.DB)
+	go scheduler.Start()
+	go scheduler.StartMaintenance()
+
 	// شروع ربات
 	go bot.Start()
+
+	log.Println("🎯 ربات آماده دریافت پیام‌ها...")
 
 	// مدیریت خاموشی گران‌قدر
 	waitForShutdown()
@@ -149,3 +160,4 @@ func waitForShutdown() {
 	log.Println("✅ ربات با موفقیت متوقف شد")
 	os.Exit(0)
 }
+EOF
