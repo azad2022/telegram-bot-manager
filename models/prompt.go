@@ -2,182 +2,110 @@ package models
 
 import (
 	"database/sql"
+	"errors"
 	"time"
 )
 
 type Prompt struct {
-	ID        int64     `json:"id"`
-	UserID    int64     `json:"user_id"`
-	Title     string    `json:"title"`
-	Content   string    `json:"content"`
-	IsActive  bool      `json:"is_active"`
-	CreatedAt time.Time `json:"created_at"`
+	ID         int
+	UserID     int
+	Content    string
+	Response   string
+	CreatedAt  time.Time
+	IsFavorite bool
 }
 
-// ایجاد پرامپت جدید
-func CreatePrompt(db *sql.DB, userID int64, title, content string) error {
-	// غیرفعال کردن سایر پرامپت‌های کاربر
-	err := DeactivateAllUserPrompts(db, userID)
-	if err != nil {
-		return err
-	}
-
-	// ایجاد پرامپت جدید به عنوان فعال
+func CreatePrompt(db *sql.DB, userID int, content, response string) error {
 	query := `
-		INSERT INTO prompts (user_id, title, content, is_active, created_at)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO prompts (user_id, content, response, created_at)
+		VALUES ($1, $2, $3, NOW());
 	`
-	_, err = db.Exec(query, userID, title, content, true, time.Now())
+	_, err := db.Exec(query, userID, content, response)
 	return err
 }
 
-// دریافت تمام پرامپت‌های یک کاربر
-func GetUserPrompts(db *sql.DB, userID int64) ([]Prompt, error) {
+func GetUserPrompts(db *sql.DB, userID int, limit int) ([]Prompt, error) {
 	query := `
-		SELECT id, user_id, title, content, is_active, created_at
-		FROM prompts 
-		WHERE user_id = $1 
+		SELECT id, user_id, content, response, created_at, false as is_favorite
+		FROM prompts
+		WHERE user_id = $1
 		ORDER BY created_at DESC
+		LIMIT $2;
 	`
-	
-	rows, err := db.Query(query, userID)
+	rows, err := db.Query(query, userID, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	
+
 	var prompts []Prompt
 	for rows.Next() {
-		var prompt Prompt
-		err := rows.Scan(
-			&prompt.ID, &prompt.UserID, &prompt.Title, &prompt.Content, 
-			&prompt.IsActive, &prompt.CreatedAt,
-		)
-		if err != nil {
+		var p Prompt
+		if err := rows.Scan(&p.ID, &p.UserID, &p.Content, &p.Response, &p.CreatedAt, &p.IsFavorite); err != nil {
 			return nil, err
 		}
-		prompts = append(prompts, prompt)
+		prompts = append(prompts, p)
 	}
-	
+
 	return prompts, nil
 }
 
-// دریافت پرامپت فعال کاربر
-func GetActivePrompt(db *sql.DB, userID int64) (*Prompt, error) {
-	query := `
-		SELECT id, user_id, title, content, is_active, created_at
-		FROM prompts 
-		WHERE user_id = $1 AND is_active = true
-		LIMIT 1
-	`
-	
-	prompt := &Prompt{}
-	err := db.QueryRow(query, userID).Scan(
-		&prompt.ID, &prompt.UserID, &prompt.Title, &prompt.Content, 
-		&prompt.IsActive, &prompt.CreatedAt,
-	)
-	
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil // پرامپت فعالی وجود ندارد
-		}
-		return nil, err
-	}
-	
-	return prompt, nil
-}
-
-// انتخاب پرامپت فعال
-func SetActivePrompt(db *sql.DB, userID, promptID int64) error {
-	// غیرفعال کردن تمام پرامپت‌های کاربر
-	err := DeactivateAllUserPrompts(db, userID)
-	if err != nil {
-		return err
-	}
-
-	// فعال کردن پرامپت انتخاب شده
-	query := `UPDATE prompts SET is_active = true WHERE id = $1 AND user_id = $2`
-	_, err = db.Exec(query, promptID, userID)
-	return err
-}
-
-// غیرفعال کردن تمام پرامپت‌های کاربر
-func DeactivateAllUserPrompts(db *sql.DB, userID int64) error {
-	query := `UPDATE prompts SET is_active = false WHERE user_id = $1`
-	_, err := db.Exec(query, userID)
-	return err
-}
-
-// به‌روزرسانی پرامپت
-func UpdatePrompt(db *sql.DB, promptID int64, title, content string) error {
-	query := `UPDATE prompts SET title = $1, content = $2 WHERE id = $3`
-	_, err := db.Exec(query, title, content, promptID)
-	return err
-}
-
-// حذف پرامپت
-func DeletePrompt(db *sql.DB, promptID int64) error {
-	query := `DELETE FROM prompts WHERE id = $1`
-	_, err := db.Exec(query, promptID)
-	return err
-}
-
-// بررسی تعداد پرامپت‌های کاربر
-func GetUserPromptCount(db *sql.DB, userID int64, isVIP bool) (int, error) {
-	var maxPrompts int
-	if isVIP {
-		maxPrompts = 10 // کاربران VIP تا 10 پرامپت
-	} else {
-		maxPrompts = 3 // کاربران عادی تا 3 پرامپت
-	}
-
-	query := `SELECT COUNT(*) FROM prompts WHERE user_id = $1`
+// CheckPromptLimit بررسی می‌کند که آیا کاربر هنوز مجاز به ساخت پرامپت جدید هست یا نه.
+func CheckPromptLimit(db *sql.DB, userID int, isVIP bool) (bool, int, error) {
 	var count int
-	err := db.QueryRow(query, userID).Scan(&count)
-	if err != nil {
-		return 0, err
-	}
-
-	return count, nil
-}
-
-// بررسی امکان ایجاد پرامپت جدید
-func CanCreatePrompt(db *sql.DB, userID int64, isVIP bool) (bool, int, error) {
-	count, err := GetUserPromptCount(db, userID, isVIP)
+	err := db.QueryRow(`SELECT COUNT(*) FROM prompts WHERE user_id = $1;`, userID).Scan(&count)
 	if err != nil {
 		return false, 0, err
 	}
 
-	var maxPrompts int
+	maxPrompts := 3
 	if isVIP {
 		maxPrompts = 10
-	} else {
-		maxPrompts = 3
 	}
 
-	return count < maxPrompts, maxPrompts - count, nil
+	remaining := maxPrompts - count
+	if remaining <= 0 {
+		return false, 0, nil
+	}
+
+	return true, remaining, nil
 }
 
-// دریافت اطلاعات پرامپت بر اساس ID
-func GetPromptByID(db *sql.DB, promptID int64) (*Prompt, error) {
-	query := `
-		SELECT id, user_id, title, content, is_active, created_at
-		FROM prompts 
-		WHERE id = $1
-	`
-	
-	prompt := &Prompt{}
-	err := db.QueryRow(query, promptID).Scan(
-		&prompt.ID, &prompt.UserID, &prompt.Title, &prompt.Content, 
-		&prompt.IsActive, &prompt.CreatedAt,
-	)
-	
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil // پرامپت وجود ندارد
-		}
-		return nil, err
+// DeleteOldPrompts حذف پرامپت‌های قدیمی در صورت تجاوز از محدودیت
+func DeleteOldPrompts(db *sql.DB, userID int, isVIP bool) error {
+	maxPrompts := 3
+	if isVIP {
+		maxPrompts = 10
 	}
-	
-	return prompt, nil
+
+	query := `
+		DELETE FROM prompts
+		WHERE id IN (
+			SELECT id FROM prompts
+			WHERE user_id = $1
+			ORDER BY created_at DESC
+			OFFSET $2
+		);
+	`
+	_, err := db.Exec(query, userID, maxPrompts)
+	return err
+}
+
+// EnsurePromptTable ایجاد جدول در صورت نبود
+func EnsurePromptTable(db *sql.DB) error {
+	query := `
+		CREATE TABLE IF NOT EXISTS prompts (
+			id SERIAL PRIMARY KEY,
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			content TEXT NOT NULL,
+			response TEXT,
+			created_at TIMESTAMP DEFAULT NOW(),
+			is_favorite BOOLEAN DEFAULT FALSE
+		);
+	`
+	_, err := db.Exec(query)
+	if err != nil {
+		return errors.New("cannot create table prompts: " + err.Error())
+	}
+	return nil
 }
